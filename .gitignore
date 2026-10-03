@@ -1,0 +1,16 @@
+node_modules/
+dist/
+release/
+coverage/
+*.local
+.DS_Store
+*.log
+dist.old/
+dist.new/
+.install.tmp/
+.runtime.new/
+.update-cache/
+/beescad-data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
