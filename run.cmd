@@ -3,6 +3,7 @@ setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 if "%PORT%"=="" set PORT=8080
+if "%HOST%"=="" set HOST=127.0.0.1
 set URL=http://127.0.0.1:%PORT%
 
 where node >nul 2>nul || (
@@ -29,4 +30,4 @@ if not exist "dist\index.html" (
 
 echo ==^> Запуск BeesCAD на %URL%
 start "" "%URL%"
-node scripts\server.mjs %PORT%
+node scripts\server.mjs %PORT% --host %HOST%
