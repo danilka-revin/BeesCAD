@@ -8,6 +8,9 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 PORT="${PORT:-8080}"
+# HOST=0.0.0.0 bash run.sh — открыть сайт другим устройствам в сети (второй
+# компьютер, телефон, песочница/превью). По умолчанию — только этот компьютер.
+HOST="${HOST:-127.0.0.1}"
 URL="http://127.0.0.1:$PORT"
 LOG="node_modules/.cache/run-server.log"
 PIDFILE="node_modules/.cache/run-server.pid"
@@ -101,7 +104,7 @@ if alive; then
 fi
 if ! alive; then
   mkdir -p "$(dirname "$LOG")"
-  nohup node scripts/server.mjs "$PORT" >"$LOG" 2>&1 &
+  nohup node scripts/server.mjs "$PORT" --host "$HOST" >"$LOG" 2>&1 &
   PID=$!
   echo "$PID" > "$PIDFILE"
   for _ in $(seq 1 40); do
@@ -115,5 +118,16 @@ if ! alive; then
   fi
   echo "Сервер работает в фоне (остановить: kill $PID)"
 fi
+case "$HOST" in
+  127.0.0.1|localhost|::1|"") ;;
+  *)
+    echo "Сайт открыт для сети — с других устройств:"
+    node --input-type=module -e 'import { networkInterfaces } from "node:os";
+      for (const l of Object.values(networkInterfaces())) for (const i of l || [])
+        if (i.family === "IPv4" && !i.internal) console.log("  http://" + i.address + ":" + process.argv[1]);' \
+      "$PORT" 2>/dev/null || true
+    echo "Обновление приложения (/update/*) при этом доступно только с этого компьютера."
+    ;;
+esac
 echo "Открываю $URL"
 xdg-open "$URL" >/dev/null 2>&1 || echo "Откройте в браузере: $URL"

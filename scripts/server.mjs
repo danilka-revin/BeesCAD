@@ -3,7 +3,11 @@
 // Использование: node server.mjs [порт] [корень] — по умолчанию 8080 и ./dist рядом.
 // Ключи:
 //   --self                    — сервер запущен из клона репозитория (dev/песочница);
-//   --app-dir <dir>           — установленная программа (каталог с dist/, repo.txt, update.mjs).
+//   --app-dir <dir>           — установленная программа (каталог с dist/, repo.txt, update.mjs);
+//   --host <addr>             — интерфейс: 127.0.0.1 (по умолчанию) или 0.0.0.0,
+//                               если сайт нужно открыть с другого устройства
+//                               (второй компьютер, телефон, песочница/превью).
+//                               Эндпоинты /update/* при этом остаются только для loopback.
 // Также: import { startServer } from './server.mjs' (локальный лаунчер и тесты).
 //
 // Кнопка «Обновить с main» (HTTP):
@@ -14,6 +18,7 @@
 //   POST /update/cancel — отменить обновление (текущая версия остаётся).
 import { createServer } from 'node:http';
 import { readFile, stat, mkdir, writeFile, rm, rename } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFile, spawn } from 'node:child_process';
@@ -146,6 +151,16 @@ async function gitP(args, opts = {}) {
 const short = (s) => String(s || '').slice(0, 7);
 const isSha = (s) => /^[0-9a-f]{40}$/i.test(String(s || ''));
 
+// Loopback-адрес клиента или нет. /update/* выполняет git pull + npm ci + сборку +
+// перезапуск, поэтому эти эндпоинты доступны только с самого компьютера — даже если
+// сам сайт намеренно открыт наружу (--host 0.0.0.0).
+function isLoopbackAddr(addr) {
+  const a = String(addr || '').replace(/^\[|\]$/g, '').trim();
+  if (!a) return true;
+  if (a.toLowerCase().startsWith('::ffff:')) return isLoopbackAddr(a.slice(7));
+  return a === '::1' || a === '127.0.0.1' || a.startsWith('127.');
+}
+
 const firstLine = (err, max = 260) => (String(err || '').trim().split('\n')[0] || '').slice(0, max);
 const lastLines = (s, n = 4, max = 400) => String(s || '').trim().split('\n').filter(Boolean).slice(-n).join('\n').slice(-max);
 
@@ -253,10 +268,11 @@ function lockPackageCount(lockText) {
 
 export async function startServer(opts = {}) {
   const argv = process.argv.slice(2);
-  const cli = { port: null, root: null, appDir: null, self: false };
+  const cli = { port: null, root: null, appDir: null, host: null, self: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--app-dir' || a === '--appdir') { cli.appDir = argv[++i]; continue; }
+    if (a === '--host') { cli.host = argv[++i]; continue; }
     if (a === '--self') { cli.self = true; continue; }
     if (/^\d+$/.test(a)) { cli.port = a; continue; }
     cli.root = a;
@@ -267,8 +283,10 @@ export async function startServer(opts = {}) {
   if (!Number.isInteger(preferred) || preferred < 0 || preferred > 65535) {
     throw new Error(`Некорректный порт «${rawPort}»: укажите число от 0 до 65535.`);
   }
-  // Server and update endpoints are local-only by default; don't expose a privileged updater to the LAN.
-  const HOST = opts.host || process.env.HOST || '127.0.0.1';
+  // По умолчанию слушаем только loopback. HOST=0.0.0.0 (или --host 0.0.0.0) открывает
+  // сайт другим устройствам в сети — это нужно для превью/второго компьютера, но
+  // тогда привилегированные эндпоинты /update/* остаются доступны лишь с loopback.
+  const HOST = opts.host || cli.host || process.env.HOST || '127.0.0.1';
   const ROOT = resolve(opts.root || cli.root || process.env.WWW_ROOT || (await pickRoot()));
   const fallback = opts.fallbackPorts ?? 0;
   const explicitAppDir = opts.appDir || cli.appDir;
@@ -750,6 +768,12 @@ export async function startServer(opts = {}) {
       }
 
       if (url.pathname.startsWith('/update/')) {
+        if (!isLoopbackAddr(req.socket && req.socket.remoteAddress)) {
+          return json(res, 403, {
+            ok: false,
+            error: 'Обновление доступно только с этого компьютера (127.0.0.1). Откройте BeesCAD локально или обновите его в терминале.',
+          });
+        }
         const cmd = url.pathname.slice('/update/'.length);
         if (cmd === 'status') return statusUpdate(req, res, url);
         if (cmd === 'check') return await checkUpdate(res, url.searchParams.get('force') === '1');
@@ -863,10 +887,19 @@ export async function startServer(opts = {}) {
 
   const addr = server.address();
   const actual = typeof addr === 'object' && addr ? addr.port : port;
-  const urlHost = HOST === '0.0.0.0' ? '127.0.0.1' : HOST;
+  const urlHost = HOST === '0.0.0.0' || HOST === '::' ? '127.0.0.1' : HOST;
   const url = `http://${urlHost}:${actual}`;
   console.log(`BeesCAD: ${url}  (корень: ${ROOT})`);
   console.log(`${url}/healthz`);
+  const exposed = HOST === '0.0.0.0' || HOST === '::' || !isLoopbackAddr(HOST);
+  if (exposed) {
+    for (const list of Object.values(networkInterfaces())) {
+      for (const ni of list || []) {
+        if (ni.family === 'IPv4' && !ni.internal) console.log(`В локальной сети: http://${ni.address}:${actual}`);
+      }
+    }
+    console.log('Сайт открыт для сети; обновление (/update/*) доступно только с этого компьютера.');
+  }
   return { port: actual, host: HOST, root: ROOT, url, server };
 }
 
