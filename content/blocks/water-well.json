@@ -1,10 +1,10 @@
 {
   "type": "GenericCrafter",
   "localizedName": "Водяная скважина",
-  "description": "Бурит скважину и подаёт до 400 ед. воды в секунду при полном питании. Расход энергии — 1500 ед./с.",
-  "details": "Глубинная водяная скважина с вращающейся крыльчаткой и четырьмя гидравлическими каналами. Оформлена в стандартной серой палитре, поэтому не выделяется среди обычных насосов.",
-  "size": 4,
-  "health": 1600,
+  "description": "Крупная скважина в стиле гидронасоса: подаёт до 400 ед. воды в секунду при полном питании. Расход энергии — 3000 ед./с.",
+  "details": "Дизайн ванильного гидронасоса Mindustry, растянутый с 2×2 до 5×5: серый корпус, синие кольца и четыре вращающихся модуля ротора.",
+  "size": 5,
+  "health": 2500,
   "category": "production",
   "buildVisibility": "shown",
   "research": "mechanical-drill",
@@ -19,7 +19,7 @@
   "hasPower": true,
   "hasItems": false,
   "itemCapacity": 0,
-  "consumes": { "power": 25 },
+  "consumes": { "power": 50 },
   "hasLiquids": true,
   "outputsLiquid": true,
   "liquidCapacity": 480,
@@ -31,9 +31,13 @@
     { "type": "DrawDefault" },
     {
       "type": "DrawRegion",
-      "suffix": "-rotor",
-      "rotateSpeed": 1.5,
+      "suffix": "-rotator",
+      "rotateSpeed": 1.0,
       "spinSprite": true
+    },
+    {
+      "type": "DrawRegion",
+      "suffix": "-top"
     }
   ]
 }
