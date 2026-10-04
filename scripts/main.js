@@ -70,9 +70,23 @@ const CFG = {
     // Снимать правило pauseDisabled на сервере: в кампании оно иногда мешает
     // ставить паузу даже хосту.
     forcePauseAllowed: true,
+
+    // ---- сборка T5-юнитов ----
+    // Юниты пятого уровня («Эклипс», «Рейн», «Окт», «Колларис» и другие)
+    // собираются вдвое быстрее: у «Тетративного реконструктора» уменьшается
+    // время сборки, у «Сборщиков» — время только тех планов, которые
+    // выпускают T5.
+    t5FasterCraft: true,
+
+    // Множитель времени сборки: 0.5 — вдвое быстрее, 1 — как в ванильной игре.
+    t5CraftTimeMultiplier: 0.5,
+
+    // Свои юниты из других модов, которые тоже нужно считать T5:
+    // например ["my-titan"]. Ванильные T5 перечислены ниже, в коде.
+    t5Units: [],
 };
 
-const MOD_VERSION = "2.1.0";
+const MOD_VERSION = "3.0.0";
 const TAG = "[кооп] ";
 
 // ------------------- доступ к классам игры через Packages ------------------
@@ -784,6 +798,8 @@ function statusCommand(player){
     lines.push("меню паузы: " + (pauseMenuInstalled ? "кнопки добавлены" : "кнопки не добавлены"));
     lines.push("карта планеты: " + ((planetFacade != null) ? "доступна клиенту (просмотр)" : "ванильная"));
     lines.push("исследования: " + ((researchFacade != null) ? "доступны клиенту (просмотр)" : "ванильные"));
+    lines.push("мега-купол: " + (megaDomePresent() ? "доступен (эффекты, 4×4)" : "не найден"));
+    lines.push(t5StatusLine());
 
     var errors = 0;
     for(var i = 0; i < diagnostics.length; i++){
@@ -827,7 +843,164 @@ function onUpdate(){
     allowPauseRule();
 }
 
-// ============================ 9. СОБЫТИЯ ===================================
+// ==================== 9. СБОРКА T5-ЮНИТОВ ВДВОЕ БЫСТРЕЕ ====================
+// Юнит пятого уровня (T5) — самый сильный в игре: на Серпуло это «Эклипс»,
+// «Токсопид», «Рейн», «Омура», «Окт», «Корвус» и «Наванакс», на Эрекире —
+// «Конкер», «Дизрапт» и «Колларис». Собираются они очень долго: 4 минуты в
+// «Тетративном реконструкторе» и от 50 секунд до 3 минут в «Сборщиках».
+//
+// Мод сокращает это время множителем t5CraftTimeMultiplier (0.5 — вдвое
+// быстрее). Правила простые и не задевают юнитов младших уровней:
+//   • у реконструктора время сборки одно на все апгрейды (в ваниле это
+//     «Тетративный реконструктор», где все апгрейды — T5), поэтому его
+//     constructTime уменьшается, только если ВСЕ апгрейды блока ведут к T5;
+//   • у «Сборщиков» время своё у каждого плана, поэтому уменьшается время
+//     только тех планов, которые выпускают T5.
+//
+// Время меняется на объектах блоков, то есть в симуляции. В мультиплеере
+// симуляцией управляет сервер, поэтому ускорение работает, если мод стоит у
+// хоста (или на выделенном сервере) — как и весь остальной мод.
+
+const VANILLA_T5_UNITS = [
+    // Серпуло
+    "eclipse", "toxopid", "reign", "omura", "oct", "corvus", "navanax",
+    // Эрекир
+    "conquer", "disrupt", "collaris",
+];
+
+var t5Originals = {};   // ключ -> исходное время (чтобы не ускорять дважды)
+var t5Report = [];      // что именно ускорили (для /mp-status)
+
+function t5UnitNames(){
+    var names = {};
+    var i;
+    for(i = 0; i < VANILLA_T5_UNITS.length; i++){
+        names[VANILLA_T5_UNITS[i]] = true;
+    }
+    if(CFG.t5Units != null){
+        for(i = 0; i < CFG.t5Units.length; i++){
+            names[String(CFG.t5Units[i])] = true;
+        }
+    }
+    return names;
+}
+
+function isT5Unit(unit, names){
+    if(unit == null || unit.name == null) return false;
+    return names[String(unit.name)] === true;
+}
+
+// Время по ключу: запоминаем исходное значение и всегда считаем от него,
+// поэтому повторный запуск (WorldLoad и т. п.) ничего не «удваивает».
+function scaledTime(key, current, multiplier){
+    if(t5Originals[key] == null) t5Originals[key] = current;
+    var original = t5Originals[key];
+    return original * multiplier;
+}
+
+function scaleT5Reconstructor(block, names, multiplier){
+    var upgrades = block.upgrades;
+    if(upgrades == null || upgrades.size == 0) return;
+
+    var any = false, all = true;
+    for(var i = 0; i < upgrades.size; i++){
+        var pair = upgrades.get(i);
+        if(pair == null || pair.length < 2) continue;
+        if(isT5Unit(pair[1], names)){
+            any = true;
+        }else{
+            all = false;
+        }
+    }
+
+    // Смешанный список (T5 и младшие уровни вместе) не трогаем: одно время
+    // сборки общее, и ускорение задело бы младших юнитов.
+    if(!any || !all) return;
+
+    var key = "block:" + block.name;
+    var before = block.constructTime;
+    block.constructTime = scaledTime(key, before, multiplier);
+    if(t5Report.indexOf(block.name) < 0){
+        t5Report.push(block.name);
+        note("сборка T5 ускорена: " + block.name + " (" + Math.round(before / 60) + " с → "
+            + Math.round(block.constructTime / 60) + " с)");
+    }
+}
+
+function scaleT5AssemblerPlans(block, names, multiplier){
+    var plans = block.plans;
+    if(plans == null) return;
+
+    for(var i = 0; i < plans.size; i++){
+        var plan = plans.get(i);
+        if(plan == null || !isT5Unit(plan.unit, names)) continue;
+
+        var label = block.name + " → " + plan.unit.name;
+        var key = "plan:" + label;
+        var before = plan.time;
+        plan.time = scaledTime(key, before, multiplier);
+        if(t5Report.indexOf(label) < 0){
+            t5Report.push(label);
+            note("сборка T5 ускорена: " + label + " (" + Math.round(before / 60) + " с → "
+                + Math.round(plan.time / 60) + " с)");
+        }
+    }
+}
+
+function applyT5CraftTime(){
+    if(!CFG.t5FasterCraft) return;
+    var multiplier = CFG.t5CraftTimeMultiplier;
+    if(!(multiplier > 0) || multiplier >= 1) return;
+
+    var content = (VarsC == null) ? null : VarsC.content;
+    if(content == null) return;
+
+    safe("ускорение сборки T5-юнитов", function(){
+        var reconstructorCls = lazyCls("mindustry.world.blocks.units.Reconstructor");
+        var assemblerCls = lazyCls("mindustry.world.blocks.units.UnitAssembler");
+        if(reconstructorCls == null && assemblerCls == null) return;
+
+        var names = t5UnitNames();
+        var blocks = content.blocks();
+        var count = 0;
+
+        for(var i = 0; i < blocks.size; i++){
+            var block = blocks.get(i);
+            if(block == null) continue;
+            if(reconstructorCls != null && reconstructorCls.isInstance(block)){
+                scaleT5Reconstructor(block, names, multiplier);
+                count++;
+            }else if(assemblerCls != null && assemblerCls.isInstance(block)){
+                scaleT5AssemblerPlans(block, names, multiplier);
+                count++;
+            }
+        }
+
+        if(count > 0 && t5Report.length > 0) logI("T5-юниты собираются быстрее: " + t5Report.join(", "));
+    });
+}
+
+function t5StatusLine(){
+    if(!CFG.t5FasterCraft || !(CFG.t5CraftTimeMultiplier > 0) || CFG.t5CraftTimeMultiplier >= 1){
+        return T("mp.t5.disabled", "сборка T5-юнитов: без изменений");
+    }
+    var speed = Math.round(100 / CFG.t5CraftTimeMultiplier) / 100;
+    return T("mp.t5.faster", "сборка T5-юнитов: ускорена")
+        + " — в " + speed + " раза, сборок: " + t5Report.length;
+}
+
+// Есть ли в загруженном контенте мега-купол (проверка, что мод собрался верно).
+function megaDomePresent(){
+    var content = (VarsC == null) ? null : VarsC.content;
+    if(content == null || content.block == null) return false;
+    try{
+        return content.block("water-well-400-mega-dome") != null;
+    }catch(e){
+        return false;
+    }
+}
+
+// ============================ 10. СОБЫТИЯ ==================================
 
 function on(eventClass, fn){
     if(EventsC == null || eventClass == null) return;
@@ -840,6 +1013,7 @@ function on(eventClass, fn){
 // Загрузка клиента: это и клиент, и хост (у хоста интерфейс тоже есть).
 on(ClientLoadEventC, function(){
     registerCommands();
+    applyT5CraftTime();
     if(!headlessA()){
         installPauseMenu();
         allowPauseRule();
@@ -849,12 +1023,16 @@ on(ClientLoadEventC, function(){
 // Запуск выделенного сервера: нужна только серверная часть.
 on(ServerLoadEventC, function(){
     registerCommands();
+    applyT5CraftTime();
     allowPauseRule();
 });
 
 // Начало игры: проверяем правила и включаем клиентские возможности.
 on(WorldLoadEventC, function(){
     registerCommands();
+    // Контент модов (в том числе юниты других модов) появляется только после
+    // загрузки скриптов, поэтому время сборки T5 проверяем ещё раз.
+    applyT5CraftTime();
     allowPauseRule();
     if(asClient()){
         installPlanetFacade();
@@ -869,5 +1047,10 @@ if(EventsC != null && TriggerC != null){
         if(listener != null) EventsC.run(TriggerC.update, listener);
     });
 }
+
+// Первая попытка ускорения — сразу при загрузке мода: ванильные юниты и
+// блоки уже существуют, а контент этого и других модов подхватится позже,
+// на WorldLoadEvent (см. раздел 10).
+applyT5CraftTime();
 
 logI("кооп-модуль загружен (версия " + MOD_VERSION + ")");

@@ -1,195 +1,245 @@
 #!/usr/bin/env python3
-"""Stretch the vanilla Mindustry Water Extractor art to the 5x5 well.
+"""Build the mod's block sprites from the original Mindustry artwork.
 
-The source layers are the official v146 Water Extractor sprites (2x2): the
-base, its spinning four-part rotator, and the top plate. They are enlarged with
-nearest-neighbor sampling to keep Mindustry's pixel-art style crisp.
+Sources are the vanilla layers (Anuken/Mindustry, GPL-3.0, tag v146):
 
-Upstream source: Anuken/Mindustry, core/assets-raw/sprites/blocks/drills/
-water-extractor{,-rotator,-top}.png (tag v146).
+    core/assets-raw/sprites/blocks/drills/water-extractor{,-rotator,-top}.png
+    core/assets-raw/sprites/blocks/defense/overdrive-dome{,-top}.png
+
+They are copied into ``tools/assets`` and enlarged to the mod blocks' size --
+5x5 tiles for the well, 4x4 for the mega dome -- with a bicubic (Catmull-Rom)
+filter over premultiplied alpha instead of nearest-neighbour pixel doubling.
+That keeps the vanilla shapes but gives smooth, anti-aliased contours instead
+of stair-stepped "pixel" edges, even though the sprite is still 32 px per tile.
+
+While resampling, the flat vanilla palette is remapped to the mod's darker one:
+the well's greys go down to ~72 % brightness (its water-blue rings stay vivid),
+the dome's greys too and its warm glow is dimmed as well.
+
+Run without arguments to regenerate every sprite in ``sprites/blocks`` and the
+mod icon; pass ``--preview DIR`` to also write large preview copies.
 """
 
 from pathlib import Path
-import struct
-import zlib
+import math
+import sys
+
+from pngio import composite, empty, read_rgba_png, write_rgba_png
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSET_DIR = ROOT / "tools" / "assets"
-SOURCE_BASE = ASSET_DIR / "vanilla-water-extractor.png"
-SOURCE_ROTATOR = ASSET_DIR / "vanilla-water-extractor-rotator.png"
-SOURCE_TOP = ASSET_DIR / "vanilla-water-extractor-top.png"
-BLOCK_SIZE = 5
+SPRITE_DIR = ROOT / "sprites" / "blocks"
 PIXELS_PER_TILE = 32
-OUTPUT_SIZE = BLOCK_SIZE * PIXELS_PER_TILE
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+WELL_TILES = 5
+DOME_TILES = 4
 
 
-def paeth(left, above, upper_left):
-    estimate = left + above - upper_left
-    left_distance = abs(estimate - left)
-    above_distance = abs(estimate - above)
-    upper_left_distance = abs(estimate - upper_left)
-    if left_distance <= above_distance and left_distance <= upper_left_distance:
-        return left
-    if above_distance <= upper_left_distance:
-        return above
-    return upper_left
+# ------------------------------- палитры -----------------------------------
+# Индексы — цвета оригинальных спрайтов Mindustry, значения — цвета мода.
+
+WELL_PALETTE = {
+    # серый корпус: темнее на ~28 %
+    (74, 75, 83, 255): (53, 54, 60, 255),
+    (110, 112, 128, 255): (79, 81, 92, 255),
+    (152, 154, 164, 255): (109, 111, 118, 255),
+    (176, 186, 192, 255): (127, 134, 138, 255),
+    # синие кольца: чуть глубже, но по-прежнему яркие
+    (136, 164, 255, 255): (120, 144, 224, 255),
+    (87, 87, 193, 255): (77, 77, 170, 255),
+}
+
+DOME_PALETTE = {
+    # те же серые, что и у скважины
+    (74, 75, 83, 255): (53, 54, 60, 255),
+    (110, 112, 128, 255): (79, 81, 92, 255),
+    (152, 154, 164, 255): (109, 111, 118, 255),
+    (176, 186, 192, 255): (127, 134, 138, 255),
+    # оранжевое свечение и лучи: темнее на ~20 %
+    (254, 179, 128, 255): (203, 143, 102, 255),
+    (188, 84, 82, 255): (150, 67, 66, 255),
+    (234, 136, 120, 255): (187, 109, 96, 255),
+    (196, 95, 95, 255): (157, 76, 76, 255),
+}
+
+DOME_TOP_PALETTE = {
+    # сам купол подсвечивается цветом из JSON, поэтому его спрайт темним,
+    # чтобы свечение вышло спокойнее
+    (255, 255, 255, 255): (214, 214, 214, 255),
+    (255, 214, 184, 255): (214, 180, 155, 255),
+}
 
 
-def read_rgba_png(path):
-    """Decode a non-interlaced 8-bit RGBA PNG using only the standard library."""
-    data = Path(path).read_bytes()
-    if not data.startswith(PNG_SIGNATURE):
-        raise ValueError(f"Not a PNG file: {path}")
-
-    offset = len(PNG_SIGNATURE)
-    compressed = bytearray()
-    width = height = bit_depth = color_type = interlace = None
-    while offset < len(data):
-        length = struct.unpack(">I", data[offset:offset + 4])[0]
-        kind = data[offset + 4:offset + 8]
-        chunk = data[offset + 8:offset + 8 + length]
-        offset += length + 12
-        if kind == b"IHDR":
-            width, height, bit_depth, color_type, compression, filtering, interlace = struct.unpack(
-                ">IIBBBBB", chunk
-            )
-            if compression != 0 or filtering != 0:
-                raise ValueError(f"Unsupported PNG encoding in {path}")
-        elif kind == b"IDAT":
-            compressed.extend(chunk)
-        elif kind == b"IEND":
-            break
-
-    if bit_depth != 8 or color_type != 6 or interlace != 0:
-        raise ValueError(f"Expected non-interlaced 8-bit RGBA PNG: {path}")
-
-    stride = width * 4
-    raw = zlib.decompress(compressed)
-    pixels = bytearray(width * height * 4)
-    previous = bytearray(stride)
-    source_offset = 0
-
-    for y in range(height):
-        filter_type = raw[source_offset]
-        source_offset += 1
-        source_row = raw[source_offset:source_offset + stride]
-        source_offset += stride
-        row = bytearray(stride)
-
-        for index, value in enumerate(source_row):
-            left = row[index - 4] if index >= 4 else 0
-            above = previous[index]
-            upper_left = previous[index - 4] if index >= 4 else 0
-
-            if filter_type == 0:
-                predictor = 0
-            elif filter_type == 1:
-                predictor = left
-            elif filter_type == 2:
-                predictor = above
-            elif filter_type == 3:
-                predictor = (left + above) // 2
-            elif filter_type == 4:
-                predictor = paeth(left, above, upper_left)
-            else:
-                raise ValueError(f"Unknown PNG filter {filter_type} in {path}")
-
-            row[index] = (value + predictor) & 0xFF
-
-        start = y * stride
-        pixels[start:start + stride] = row
-        previous = row
-
-    return width, height, pixels
+# ------------------------------ фильтры ------------------------------------
 
 
-def scale_nearest(width, height, pixels, out_width, out_height):
-    """Resize RGBA pixels without blur; useful for crisp game sprites."""
-    output = bytearray(out_width * out_height * 4)
-    for y in range(out_height):
-        source_y = min(height - 1, y * height // out_height)
-        for x in range(out_width):
-            source_x = min(width - 1, x * width // out_width)
-            source_index = (source_y * width + source_x) * 4
-            target_index = (y * out_width + x) * 4
-            output[target_index:target_index + 4] = pixels[source_index:source_index + 4]
-    return output
-
-
-def composite(base, overlay):
-    """Alpha-composite one same-sized RGBA image over another."""
-    output = bytearray(base)
+def palette_swap(pixels, mapping):
+    """Replace exact RGBA colours of flat pixel-art layers."""
+    output = bytearray(pixels)
     for index in range(0, len(output), 4):
-        source_alpha = overlay[index + 3]
-        if source_alpha == 0:
-            continue
-        if source_alpha == 255:
-            output[index:index + 4] = overlay[index:index + 4]
-            continue
-
-        destination_alpha = output[index + 3]
-        inverse_alpha = 255 - source_alpha
-        result_alpha = source_alpha + destination_alpha * inverse_alpha / 255
-        if result_alpha <= 0:
-            continue
-        for channel in range(3):
-            source_value = overlay[index + channel]
-            destination_value = output[index + channel]
-            value = (
-                source_value * source_alpha
-                + destination_value * destination_alpha * inverse_alpha / 255
-            ) / result_alpha
-            output[index + channel] = max(0, min(255, int(value + 0.5)))
-        output[index + 3] = max(0, min(255, int(result_alpha + 0.5)))
+        key = (output[index], output[index + 1], output[index + 2], output[index + 3])
+        replacement = mapping.get(key)
+        if replacement is not None:
+            output[index:index + 4] = bytes(replacement)
     return output
 
 
-def png_chunk(kind, payload):
-    data = kind + payload
-    return struct.pack(">I", len(payload)) + data + struct.pack(">I", zlib.crc32(data) & 0xFFFFFFFF)
+def _catmull_rom_weights(frac):
+    frac2 = frac * frac
+    frac3 = frac2 * frac
+    return (
+        -0.5 * frac3 + frac2 - 0.5 * frac,
+        1.5 * frac3 - 2.5 * frac2 + 1.0,
+        -1.5 * frac3 + 2.0 * frac2 + 0.5 * frac,
+        0.5 * frac3 - 0.5 * frac2,
+    )
 
 
-def write_rgba_png(path, width, height, pixels):
-    """Write 8-bit RGBA PNG with unfiltered scanlines."""
-    scanlines = bytearray()
-    stride = width * 4
+def _clamp_byte(value):
+    if value <= 0.0:
+        return 0
+    if value >= 255.0:
+        return 255
+    return int(value + 0.5)
+
+
+def resample_bicubic(width, height, pixels, out_width, out_height):
+    """Catmull-Rom resample of RGBA pixels, alpha-weighted to avoid halos.
+
+    Both passes work on premultiplied colours, so fully transparent pixels
+    never bleed into the visible edges.
+    """
+    if (width, height) == (out_width, out_height):
+        return bytearray(pixels)
+
+    # horizontal pass -> out_width x height, floats
+    horizontal = [0.0] * (out_width * height * 4)
+    x_ratio = width / out_width
     for y in range(height):
-        scanlines.append(0)
-        start = y * stride
-        scanlines.extend(pixels[start:start + stride])
+        row = y * width * 4
+        for x in range(out_width):
+            position = (x + 0.5) * x_ratio - 0.5
+            base = math.floor(position)
+            weights = _catmull_rom_weights(position - base)
 
-    data = bytearray(PNG_SIGNATURE)
-    data.extend(png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)))
-    data.extend(png_chunk(b"IDAT", zlib.compress(bytes(scanlines), 9)))
-    data.extend(png_chunk(b"IEND", b""))
-    Path(path).write_bytes(data)
+            red = green = blue = alpha = 0.0
+            for tap in range(4):
+                source_x = min(width - 1, max(0, base - 1 + tap))
+                index = row + source_x * 4
+                weight = weights[tap]
+                if weight == 0.0:
+                    continue
+                pixel_alpha = pixels[index + 3] / 255.0
+                red += pixels[index] * pixel_alpha * weight
+                green += pixels[index + 1] * pixel_alpha * weight
+                blue += pixels[index + 2] * pixel_alpha * weight
+                alpha += pixels[index + 3] * weight
+
+            target = (y * out_width + x) * 4
+            horizontal[target] = red
+            horizontal[target + 1] = green
+            horizontal[target + 2] = blue
+            horizontal[target + 3] = alpha
+
+    # vertical pass -> out_width x out_height
+    output = empty(out_width, out_height)
+    y_ratio = height / out_height
+    for y in range(out_height):
+        position = (y + 0.5) * y_ratio - 0.5
+        base = math.floor(position)
+        weights = _catmull_rom_weights(position - base)
+        taps = [min(height - 1, max(0, base - 1 + tap)) for tap in range(4)]
+
+        for x in range(out_width):
+            red = green = blue = alpha = 0.0
+            for tap in range(4):
+                weight = weights[tap]
+                if weight == 0.0:
+                    continue
+                index = (taps[tap] * out_width + x) * 4
+                red += horizontal[index] * weight
+                green += horizontal[index + 1] * weight
+                blue += horizontal[index + 2] * weight
+                alpha += horizontal[index + 3] * weight
+
+            alpha = max(0.0, min(255.0, alpha))
+            target = (y * out_width + x) * 4
+            if alpha <= 0.5:
+                continue
+            scale = 255.0 / alpha
+            output[target] = _clamp_byte(red * scale)
+            output[target + 1] = _clamp_byte(green * scale)
+            output[target + 2] = _clamp_byte(blue * scale)
+            output[target + 3] = int(alpha + 0.5)
+    return output
+
+
+def smooth_layer(source_path, out_size, palette):
+    """Load a flat vanilla layer, recolour it and enlarge it smoothly."""
+    width, height, pixels = read_rgba_png(source_path)
+    recoloured = palette_swap(pixels, palette)
+    return resample_bicubic(width, height, recoloured, out_size, out_size)
+
+
+# ------------------------------- сборка ------------------------------------
+
+
+def build_block(name, layers):
+    """Write one block: ``layers`` holds (sprite suffix, source file, size, palette)."""
+    outputs = []
+    for suffix, source_name, out_size, palette in layers:
+        source = ASSET_DIR / source_name
+        pixels = smooth_layer(source, out_size, palette)
+        write_rgba_png(SPRITE_DIR / f"{name}{suffix}.png", out_size, out_size, pixels)
+        outputs.append((out_size, pixels))
+    return outputs
+
+
+def build_icon(outputs, size):
+    """Composite the block's layers into the mod icon."""
+    width = outputs[0][0]
+    icon = empty(width, width)
+    for _, pixels in outputs:
+        icon = composite(icon, pixels)
+    if size == width:
+        return icon
+    return resample_bicubic(width, width, icon, size, size)
 
 
 def main():
-    sources = [read_rgba_png(path) for path in (SOURCE_BASE, SOURCE_ROTATOR, SOURCE_TOP)]
-    if len({(width, height) for width, height, _ in sources}) != 1:
-        raise SystemExit("Vanilla Water Extractor sprite layers must have matching dimensions")
+    preview_dir = None
+    if len(sys.argv) >= 3 and sys.argv[1] == "--preview":
+        preview_dir = Path(sys.argv[2])
 
-    source_width, source_height, base = sources[0]
-    if source_width != 64 or source_height != 64:
-        raise SystemExit(f"Expected 64x64 vanilla 2x2 sprites, got {source_width}x{source_height}")
+    well_size = WELL_TILES * PIXELS_PER_TILE
+    dome_size = DOME_TILES * PIXELS_PER_TILE
 
-    outputs = []
-    for _, _, layer in sources:
-        outputs.append(scale_nearest(source_width, source_height, layer, OUTPUT_SIZE, OUTPUT_SIZE))
+    well = build_block("water-well", [
+        ("", "vanilla-water-extractor.png", well_size, WELL_PALETTE),
+        ("-rotator", "vanilla-water-extractor-rotator.png", well_size, WELL_PALETTE),
+        ("-top", "vanilla-water-extractor-top.png", well_size, WELL_PALETTE),
+    ])
+    dome = build_block("mega-dome", [
+        ("", "vanilla-overdrive-dome.png", dome_size, DOME_PALETTE),
+        ("-top", "vanilla-overdrive-dome-top.png", dome_size, DOME_TOP_PALETTE),
+    ])
 
-    sprite_dir = ROOT / "sprites" / "blocks"
-    sprite_dir.mkdir(parents=True, exist_ok=True)
-    write_rgba_png(sprite_dir / "water-well.png", OUTPUT_SIZE, OUTPUT_SIZE, outputs[0])
-    write_rgba_png(sprite_dir / "water-well-rotator.png", OUTPUT_SIZE, OUTPUT_SIZE, outputs[1])
-    write_rgba_png(sprite_dir / "water-well-top.png", OUTPUT_SIZE, OUTPUT_SIZE, outputs[2])
+    # Иконка мода — склеенные слои скважины, пиксель в пиксель (без уменьшения).
+    icon_size = WELL_TILES * PIXELS_PER_TILE
+    write_rgba_png(ROOT / "icon.png", icon_size, icon_size, build_icon(well, icon_size))
 
-    icon = composite(composite(base, sources[1][2]), sources[2][2])
-    write_rgba_png(ROOT / "icon.png", source_width, source_height, icon)
+    if preview_dir is not None:
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        for name, outputs in (("water-well", well), ("mega-dome", dome)):
+            for index, (size, pixels) in enumerate(outputs):
+                path = preview_dir / f"{name}-{index}.png"
+                write_rgba_png(path, size, size, pixels)
+            print(f"preview: {name} -> {preview_dir}")
+
     print(
-        f"Generated 5x5 Water Extractor sprite layers ({OUTPUT_SIZE}x{OUTPUT_SIZE}) "
-        "and a 64x64 composite icon"
+        f"Generated {WELL_TILES}x{WELL_TILES} water well ({well_size}x{well_size}) "
+        f"and {DOME_TILES}x{DOME_TILES} mega dome ({dome_size}x{dome_size}) sprites, "
+        f"{icon_size}x{icon_size} icon"
     )
 
 

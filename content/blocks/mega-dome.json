@@ -1,0 +1,34 @@
+{
+  "type": "OverdriveProjector",
+  "name": "Мега-купол",
+  "description": "Огромный сверхкупол: разгоняет все постройки в радиусе 10 клеток на +400 %. Требует воду, кремний и титан.",
+  "size": 4,
+  "health": 3200,
+  "category": "effect",
+  "buildVisibility": "shown",
+  "research": "overdrive-projector",
+  "requirements": [
+    { "item": "lead", "amount": 400 },
+    { "item": "titanium", "amount": 260 },
+    { "item": "silicon", "amount": 260 },
+    { "item": "plastanium", "amount": 160 },
+    { "item": "surge-alloy", "amount": 240 }
+  ],
+  "range": 320,
+  "speedBoost": 5,
+  "hasBoost": false,
+  "useTime": 300,
+  "itemCapacity": 80,
+  "liquidCapacity": 300,
+  "baseColor": "e8ad74",
+  "phaseColor": "f2c393",
+  "lightRadius": 90,
+  "consumes": {
+    "power": 35,
+    "liquid": { "liquid": "water", "amount": 0.5 },
+    "items": [
+      { "item": "silicon", "amount": 25 },
+      { "item": "titanium", "amount": 10 }
+    ]
+  }
+}

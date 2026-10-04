@@ -8,7 +8,8 @@
  *   • общую паузу (серверную часть, кулдаун, объявление в чат);
  *   • снятие правила pauseDisabled;
  *   • клиентские фасады карты планеты и исследований, режим просмотра;
- *   • кнопки меню паузы, горячую клавишу и блокировку действий карты.
+ *   • кнопки меню паузы, горячую клавишу и блокировку действий карты;
+ *   • ускорение сборки T5-юнитов (реконструкторы и планы «Сборщиков»).
  *
  * Запуск:  node tools/test_coop.js
  */
@@ -100,6 +101,39 @@ function makeField(store, name){
     };
 }
 
+/** Seq-подобный список для моков контента (как arc.struct.Seq). */
+function makeSeq(list){
+    return {
+        size: list.length,
+        get(index){ return list[index]; },
+        each(fn){ list.forEach(fn); }
+    };
+}
+
+/** Мок Java-класса: скрипт проверяет принадлежность через Class.isInstance. */
+function makeJavaClass(isInstance){
+    return {isInstance: (obj) => !!obj && isInstance(obj)};
+}
+
+/** Реконструктор: один constructTime на все апгрейды. */
+function mockReconstructor(name, targets, constructTime){
+    return {
+        __kind: "reconstructor",
+        name: name,
+        constructTime: constructTime,
+        upgrades: makeSeq(targets.map(target => [{name: target + "-previous"}, {name: target}]))
+    };
+}
+
+/** «Сборщик»: у каждого плана своё время и свой юнит. */
+function mockAssembler(name, plans){
+    return {
+        __kind: "assembler",
+        name: name,
+        plans: makeSeq(plans.map(plan => ({unit: {name: plan[0]}, time: plan[1]})))
+    };
+}
+
 /**
  * Мир: состояние игры, сеть, интерфейс. opts:
  *   role: "host" | "client" | "single" | "server"
@@ -130,6 +164,7 @@ function makeWorld(opts){
         playerMessages: [],
         netFields: {server: options.role === "host" || options.role === "server"},
         netFlagDuringShow: null,
+        blocks: [],
         state: {
             paused: false,
             rules: {pauseDisabled: false},
@@ -310,8 +345,16 @@ function makeWorld(opts){
                 state: stateObj,
                 ui: ui,
                 player: options.role === "client" ? {id: 7, admin: false} : {id: 1, admin: true},
-                netServer: {clientCommands: handler}
+                netServer: {clientCommands: handler},
+                content: {
+                    blocks: () => makeSeq(world.blocks),
+                    block: (name) => world.blocks.find(block => block.name === name) || null
+                }
             },
+            world: {blocks: {units: {
+                Reconstructor: makeJavaClass(block => block.__kind === "reconstructor"),
+                UnitAssembler: makeJavaClass(block => block.__kind === "assembler")
+            }}},
             gen: {
                 Call: {
                     sendMessage(text){ world.broadcasts.push(text); },
@@ -348,8 +391,13 @@ function makeWorld(opts){
     return world;
 }
 
-function loadScript(world){
-    const src = fs.readFileSync(path.join(__dirname, "..", "scripts", "main.js"), "utf8");
+/** patch — необязательная правка исходника (чтобы проверить настройки CFG). */
+function loadScript(world, patch){
+    let src = fs.readFileSync(path.join(__dirname, "..", "scripts", "main.js"), "utf8");
+    if(typeof patch === "function"){
+        const patched = patch(src);
+        if(typeof patched === "string") src = patched;
+    }
     vm.createContext(world.sandbox);
     vm.runInContext(src, world.sandbox, {filename: "scripts/main.js"});
 }
@@ -577,6 +625,10 @@ section("горячая клавиша паузы у клиента");
 section("команда /mp-status");
 {
     const world = makeWorld({role: "client"});
+    world.blocks = [
+        mockReconstructor("tetrative-reconstructor", ["eclipse"], 14400),
+        {name: "water-well-400-mega-dome"}
+    ];
     loadScript(world);
     fire(world, "ClientLoadEvent");
     tick(world);
@@ -587,6 +639,9 @@ section("команда /mp-status");
     ok(text.indexOf("кооп-модуль v") >= 0, "статус содержит версию модуля");
     ok(text.indexOf("режим: клиент") >= 0, "статус показывает режим клиента");
     ok(text.indexOf("карта планеты") >= 0, "статус показывает состояние карты");
+    ok(text.indexOf("мега-купол: доступен") >= 0, "статус показывает, что мега-купол загружен");
+    ok(text.indexOf("сборка T5-юнитов: ускорена") >= 0 && text.indexOf("в 2 раза") >= 0,
+        "статус показывает ускорение сборки T5");
     ok(text.indexOf("ошибок: 0") >= 0, "статус показывает, что ошибок в журнале нет");
 }
 
@@ -613,7 +668,67 @@ section("одиночная игра и выделенный сервер");
     ok(server.warnings.length === 0, "на выделенном сервере нет ошибок" + (server.warnings.length ? ": " + server.warnings.join("; ") : ""));
 }
 
-// --- 12. Неудачный обход проверки -----------------------------------------
+// --- 12. Ускорение сборки T5-юнитов ----------------------------------------
+section("сборка T5-юнитов вдвое быстрее");
+{
+    const world = makeWorld({role: "server"});
+    world.blocks = [
+        // ванильный тетративный реконструктор: все апгрейды — юниты T5
+        mockReconstructor("tetrative-reconstructor", ["eclipse", "toxopid", "reign"], 14400),
+        // реконструктор младших уровней: трогать нельзя
+        mockReconstructor("exponential-reconstructor", ["antumbra", "scepter"], 3900),
+        // «Сборщик»: в одном блоке и T4, и T5
+        mockAssembler("tank-assembler", [["vanquish", 3000], ["conquer", 10800]]),
+        // «Сборщик» с одним только T5
+        mockAssembler("mech-assembler", [["collaris", 10800]]),
+        // обычный блок мода: обход контента не должен на нём спотыкаться
+        {name: "water-well-400-mega-dome"}
+    ];
+
+    loadScript(world);
+    ok(world.blocks[0].constructTime === 7200, "Тетративный реконструктор собирает T5 вдвое быстрее (4 мин → 2 мин)");
+    ok(world.blocks[1].constructTime === 3900, "реконструктор младших уровней не тронут");
+    ok(world.blocks[2].plans.get(0).time === 3000, "план T4 в «Сборщике» не тронут");
+    ok(world.blocks[2].plans.get(1).time === 5400, "план T5 в «Сборщике» ускорен вдвое");
+    ok(world.blocks[3].plans.get(0).time === 5400, "«Сборщик» только с T5 ускорен целиком");
+    ok(world.warnings.length === 0, "нет ошибок" + (world.warnings.length ? ": " + world.warnings.join("; ") : ""));
+
+    // повторные проходы (клиент, сервер, загрузка мира) — без двойного ускорения
+    fire(world, "WorldLoadEvent");
+    fire(world, "ClientLoadEvent");
+    tick(world);
+    ok(world.blocks[0].constructTime === 7200, "повторная загрузка не ускоряет второй раз");
+    ok(world.blocks[2].plans.get(1).time === 5400, "планы тоже считаются от исходного времени");
+
+    ok(world.log.some(l => l.indexOf("T5-юниты собираются быстрее") >= 0), "в журнал попало, что ускорено");
+}
+
+// --- 13. Настройки модуля T5 ------------------------------------------------
+section("настройки сборки T5");
+{
+    const offWorld = makeWorld({role: "server"});
+    offWorld.blocks = [mockReconstructor("tetrative-reconstructor", ["eclipse"], 14400)];
+    loadScript(offWorld, src => src.replace("t5FasterCraft: true", "t5FasterCraft: false"));
+    ok(offWorld.blocks[0].constructTime === 14400, "t5FasterCraft: false ничего не меняет");
+
+    const slowWorld = makeWorld({role: "server"});
+    slowWorld.blocks = [mockReconstructor("tetrative-reconstructor", ["eclipse"], 14400)];
+    loadScript(slowWorld, src => src.replace("t5CraftTimeMultiplier: 0.5", "t5CraftTimeMultiplier: 0.25"));
+    ok(slowWorld.blocks[0].constructTime === 3600, "множитель времени сборки учитывается");
+
+    const customWorld = makeWorld({role: "server"});
+    customWorld.blocks = [mockReconstructor("my-reconstructor", ["my-titan"], 6000)];
+    loadScript(customWorld, src => src.replace("t5Units: []", 't5Units: ["my-titan"]'));
+    ok(customWorld.blocks[0].constructTime === 3000, "свой T5-юнит из CFG.t5Units тоже ускоряется");
+
+    // смешанный список апгрейдов ускорять нельзя: пострадали бы младшие юниты
+    const mixedWorld = makeWorld({role: "server"});
+    mixedWorld.blocks = [mockReconstructor("mixed-reconstructor", ["eclipse", "antumbra"], 14400)];
+    loadScript(mixedWorld);
+    ok(mixedWorld.blocks[0].constructTime === 14400, "смешанный список апгрейдов не трогаем");
+}
+
+// --- 14. Неудачный обход проверки -----------------------------------------
 section("обход проверки недоступен (запасной путь)");
 {
     const world = makeWorld({role: "client"});
