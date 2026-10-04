@@ -185,25 +185,103 @@ def smooth_layer(source_path, out_size, palette):
 
 
 def build_block(name, layers):
-    """Write one block: ``layers`` holds (sprite suffix, source file, size, palette)."""
-    outputs = []
+    """Write one block: ``layers`` holds (sprite suffix, source file, size, palette).
+
+    @return словарь: суффикс спрайта -> (размер стороны, пиксели).
+    """
+    outputs = {}
     for suffix, source_name, out_size, palette in layers:
         source = ASSET_DIR / source_name
         pixels = smooth_layer(source, out_size, palette)
         write_rgba_png(SPRITE_DIR / f"{name}{suffix}.png", out_size, out_size, pixels)
-        outputs.append((out_size, pixels))
+        outputs[suffix] = (out_size, pixels)
     return outputs
+
+
+def composite_layers(outputs, order):
+    """Flatten the layers of a block into one image, bottom layer first."""
+    width = outputs[order[0]][0]
+    image = empty(width, width)
+    for suffix in order:
+        image = composite(image, outputs[suffix][1])
+    return image
 
 
 def build_icon(outputs, size):
     """Composite the block's layers into the mod icon."""
-    width = outputs[0][0]
-    icon = empty(width, width)
-    for _, pixels in outputs:
-        icon = composite(icon, pixels)
-    if size == width:
+    icon = composite_layers(outputs, list(outputs))
+    if size == outputs[""][0]:
         return icon
-    return resample_bicubic(width, width, icon, size, size)
+    return resample_bicubic(size, size, icon, size, size)
+
+
+def build_readme_preview(well, dome):
+    """Картинка для README: скважина и купол на сетке клеток 32 пикселя.
+
+    ``well`` — готовое изображение скважины, ``dome`` — словарь с полями
+    ``base`` и ``top`` (слои купола) и ``size``, чтобы подсветить купол его
+    цветом свечения.
+    """
+    gap = 24
+    pad = 16
+    size = int((len(well) // 4) ** 0.5)
+    dome_size = dome["size"]
+    width = pad * 2 + size + gap + dome_size
+    height = pad * 2 + size
+
+    canvas = empty(width, height)
+    for index in range(0, len(canvas), 4):
+        canvas[index] = canvas[index + 1] = canvas[index + 2] = 46
+        canvas[index + 3] = 255
+
+    def grid(left, top, size):
+        for x in range(left, left + size + 1, PIXELS_PER_TILE):
+            for y in range(top, top + size):
+                index = (y * width + x) * 4
+                for channel in range(3):
+                    canvas[index + channel] = min(255, canvas[index + channel] + 22)
+        for y in range(top, top + size + 1, PIXELS_PER_TILE):
+            for x in range(left, left + size):
+                index = (y * width + x) * 4
+                for channel in range(3):
+                    canvas[index + channel] = min(255, canvas[index + channel] + 22)
+
+    def paste(source, size, left, top):
+        for y in range(size):
+            for x in range(size):
+                source_index = (y * size + x) * 4
+                target_index = ((y + top) * width + x + left) * 4
+                alpha = source[source_index + 3]
+                if alpha == 0:
+                    continue
+                if alpha == 255:
+                    canvas[target_index:target_index + 4] = source[source_index:source_index + 4]
+                    continue
+                source_alpha = alpha / 255
+                target_alpha = canvas[target_index + 3] / 255
+                result_alpha = source_alpha + target_alpha * (1 - source_alpha)
+                for channel in range(3):
+                    canvas[target_index + channel] = int(
+                        (source[source_index + channel] * source_alpha
+                         + canvas[target_index + channel] * target_alpha * (1 - source_alpha)) / result_alpha + 0.5
+                    )
+                canvas[target_index + 3] = int(result_alpha * 255 + 0.5)
+
+    # купол на картинке показан «под нагрузкой»: верхний слой подсвечен baseColor
+    tinted = bytearray(dome["top"])
+    for index in range(0, len(tinted), 4):
+        if tinted[index + 3] == 0:
+            continue
+        for channel, glow in enumerate((232, 173, 116)):
+            tinted[index + channel] = min(255, int(tinted[index + channel] * 0.45 + glow * 0.55))
+    glow_dome = composite(dome["base"], tinted)
+
+    grid(pad, pad, size)
+    grid(pad + size + gap, pad, dome_size)
+    paste(well, size, pad, pad)
+    paste(glow_dome, dome_size, pad + size + gap, pad)
+
+    write_rgba_png(ROOT / "docs" / "preview.png", width, height, canvas)
 
 
 def main():
@@ -227,6 +305,12 @@ def main():
     # Иконка мода — склеенные слои скважины, пиксель в пиксель (без уменьшения).
     icon_size = WELL_TILES * PIXELS_PER_TILE
     write_rgba_png(ROOT / "icon.png", icon_size, icon_size, build_icon(well, icon_size))
+
+    # Картинка для README: скважина и купол на сетке клеток.
+    build_readme_preview(
+        composite_layers(well, ["", "-rotator", "-top"]),
+        {"base": dome[""][1], "top": dome["-top"][1], "size": dome[""][0]},
+    )
 
     if preview_dir is not None:
         preview_dir.mkdir(parents=True, exist_ok=True)
