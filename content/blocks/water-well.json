@@ -1,8 +1,8 @@
 {
   "type": "GenericCrafter",
-  "localizedName": "Скважина",
-  "description": "Производит воду независимо от поверхности. Выход — до 400 ед./мин; расход энергии — 300 ед./с.",
-  "details": "Не требует воды под зданием. Центральная турбина вращается при работе.",
+  "localizedName": "Гидронасос 400",
+  "description": "Производит до 400 ед. воды в секунду при полном питании. Расход энергии — 300 ед./с.",
+  "details": "Промышленный гидронасос с вращающейся крыльчаткой и четырьмя гидравлическими каналами.",
   "size": 4,
   "health": 1600,
   "category": "production",
@@ -22,9 +22,9 @@
   "consumes": { "power": 5 },
   "hasLiquids": true,
   "outputsLiquid": true,
-  "liquidCapacity": 120,
+  "liquidCapacity": 480,
   "liquidPressure": 1,
-  "outputLiquid": { "liquid": "water", "amount": 1 },
+  "outputLiquid": { "liquid": "water", "amount": 60 },
   "liquidOutputDirections": [-1],
   "craftTime": 9,
   "drawer": [
