@@ -1,16 +1,2 @@
-node_modules/
-dist/
-release/
-coverage/
-*.local
+__pycache__/
 .DS_Store
-*.log
-dist.old/
-dist.new/
-.install.tmp/
-.runtime.new/
-.update-cache/
-/beescad-data/
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm

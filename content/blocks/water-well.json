@@ -1,0 +1,39 @@
+{
+  "type": "GenericCrafter",
+  "localizedName": "Скважина",
+  "description": "Производит воду независимо от поверхности. Выход — до 400 ед./мин; расход энергии — 300 ед./с.",
+  "details": "Не требует воды под зданием. Центральная турбина вращается при работе.",
+  "size": 4,
+  "health": 1600,
+  "category": "production",
+  "buildVisibility": "shown",
+  "research": "mechanical-drill",
+  "requirements": [
+    { "item": "copper", "amount": 260 },
+    { "item": "lead", "amount": 240 },
+    { "item": "metaglass", "amount": 140 },
+    { "item": "silicon", "amount": 120 },
+    { "item": "titanium", "amount": 100 }
+  ],
+  "placeableLiquid": true,
+  "hasPower": true,
+  "hasItems": false,
+  "itemCapacity": 0,
+  "consumes": { "power": 5 },
+  "hasLiquids": true,
+  "outputsLiquid": true,
+  "liquidCapacity": 120,
+  "liquidPressure": 1,
+  "outputLiquid": { "liquid": "water", "amount": 1 },
+  "liquidOutputDirections": [-1],
+  "craftTime": 9,
+  "drawer": [
+    { "type": "DrawDefault" },
+    {
+      "type": "DrawRegion",
+      "suffix": "-rotor",
+      "rotateSpeed": 1.5,
+      "spinSprite": true
+    }
+  ]
+}
