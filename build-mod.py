@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package this content-only Mindustry mod as an importable ZIP."""
+"""Package this Mindustry mod (block + co-op scripts) as an importable ZIP."""
 
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -12,6 +12,9 @@ FILES = (
     "sprites/blocks/water-well.png",
     "sprites/blocks/water-well-rotor.png",
     "icon.png",
+    "scripts/main.js",
+    "bundles/bundle.properties",
+    "bundles/bundle_ru.properties",
 )
 
 with ZipFile(OUTPUT, "w", compression=ZIP_DEFLATED) as archive:
